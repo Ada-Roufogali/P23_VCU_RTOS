@@ -1,0 +1,3 @@
+../Core/Src/autonomous_mode.c:22:6:Initial_Check_Task	24	static
+../Core/Src/autonomous_mode.c:64:6:ASB_Heartbeat_Task	24	static
+../Core/Src/autonomous_mode.c:80:6:AS_Status_Task	24	static

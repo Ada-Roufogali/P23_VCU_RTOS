@@ -1,0 +1,109 @@
+/*
+ * shared_variables.h
+ *
+ *  Created on: Mar 25, 2023
+ *      Author: adaro
+ */
+
+#ifndef INC_SHARED_VARIABLES_H_
+#define INC_SHARED_VARIABLES_H_
+
+#include "FreeRTOS.h"
+#include "task.h"
+#include "main.h"
+#include "cmsis_os.h"
+#include "event_groups.h"
+#include "semphr.h"
+#include "fdcan.h"
+#include "queue.h"
+#include "timers.h"
+#include "adc.h"
+
+#define ULONG_MAX 0xffffffff
+
+/* PRECHARGE FLAGS */
+#define PC_PRESSED 1<<1
+#define PRECHARGE 1<<2
+#define AIRM 1<<3
+#define AIRP 1<<4
+#define MISSION_LOCKED 1<<5
+
+/* AS STATUS FLAGS */
+#define AUTONOMOUS_MODE 1<<1
+#define EBS_ACTIVATED 1<<2
+#define MISSION_SELECTED 1<<3
+#define ASMS 1<<4
+#define ASB_OK 1<<5
+#define TS_ACTIVE 1<<6
+#define RTD_MODE 1<<7
+#define BRAKES_ENGAGED 1<<8
+#define MISSION_FINISHED 1<<9
+#define STANDSTILL 1<<10
+#define DV_READY 1<<11
+
+extern TaskHandle_t Button_Pressed;
+extern TaskHandle_t Open_Shutdown;
+extern TaskHandle_t Enable_Inverter;
+extern TaskHandle_t Disable_Inverter;
+extern TaskHandle_t Ready_To_Drive;
+extern TaskHandle_t Initial_Check;
+extern TaskHandle_t ASB_Heartbeat;
+extern TaskHandle_t AS_Status;
+extern TaskHandle_t Mission_Handler;
+extern TaskHandle_t Autonomous_Torque_Command;
+extern TaskHandle_t Heartbeats;
+
+extern EventGroupHandle_t xPrecharge_EventGroup;
+extern EventGroupHandle_t xAS_Status_EventGroup;
+extern EventGroupHandle_t xDV_Ready_EventGroup;
+extern EventGroupHandle_t xAS_Status_Enable_EventGroup;
+
+extern EventBits_t AS_Status_EventBits;
+extern EventBits_t DV_Ready_EventBits;
+
+extern SemaphoreHandle_t xRTDSemaphore;
+extern SemaphoreHandle_t xRTD_B_Semaphore;
+extern SemaphoreHandle_t xBrakeSemaphore;
+extern SemaphoreHandle_t xAppsSemaphore;
+extern SemaphoreHandle_t xTCSSemaphore;
+
+extern MotorStruct MotorCan;
+extern PrimaryStruct PrimaryCan;
+extern AutoStruct AutoCan;
+extern SendOnceStruct SendOnceMSG;
+extern MissionStruct Mission;
+
+extern TimerHandle_t Primary1CanTimer;
+extern TimerHandle_t Primary2CanTimer;
+extern TimerHandle_t MotorCanTimer;
+
+extern QueueHandle_t xSendOnceQueue;
+
+extern volatile uint16_t apps1, apps2, apps;
+extern volatile float brf,brr,max_brake,brf_vol,brr_vol;
+extern float auto_trq_req;
+extern uint8_t initial_check_previous,initial_check_current,vcu_hb;
+extern uint8_t imd,ams,asb,bspd,precharge_flag,rtd_flag;
+extern uint8_t pc_pressed,rtd_pressed,ebs_activated,initial_check_started,ts_off;
+extern uint16_t rpm_fl,rpm_fr,rpm_rl,rpm_rr;
+extern volatile uint32_t last_measurement;
+extern int16_t requested_trq;
+extern volatile uint16_t TIM1_OVC1,TIM1_OVC3,TIM3_OVC,TIM24_OVC;
+extern volatile int16_t motor_rpm;
+extern volatile uint8_t power_limit;
+extern uint8_t asb_ok,as_ready_delay,rtd_auto;
+
+extern void AS_Off_Task(void *argument);
+extern void AS_Ready_Task(void *argument);
+extern void AS_Driving_Task(void *argument);
+extern void AS_Emergency_Task(void *argument);
+extern void AS_Finished_Task(void *argument);
+
+extern void SoftwareTimersStart();
+extern void HardwareTimersStart();
+extern void PrimaryCanTx();
+extern void AutoCanTx();
+extern void MotorCanTx();
+
+extern volatile unsigned long ulHighFrequencyTimerTicks;
+#endif /* INC_SHARED_VARIABLES_H_ */

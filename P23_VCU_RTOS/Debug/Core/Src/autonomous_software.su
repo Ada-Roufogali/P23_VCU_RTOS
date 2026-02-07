@@ -1,0 +1,2 @@
+../Core/Src/autonomous_software.c:17:6:Initial_Check_Task	16	static
+../Core/Src/autonomous_software.c:45:6:AS_Status_Task	24	static

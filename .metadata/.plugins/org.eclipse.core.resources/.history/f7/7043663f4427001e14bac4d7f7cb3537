@@ -1,0 +1,963 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * File Name          : freertos.c
+  * Description        : Code for freertos applications
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "FreeRTOS.h"
+#include "task.h"
+#include "main.h"
+#include "cmsis_os.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "shared_variables.h"
+#include "inverter_torque.h"
+#include "stdlib.h"
+
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define max_power power_limit*770
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+#define max(x,y) ((x>y)?(x):(y))
+#define min(x,y)((x<y)?(x):(y))
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+/* USER CODE BEGIN Variables */
+
+/* Definition of Threads */
+TaskHandle_t Close_Shutdown;
+TaskHandle_t Open_Shutdown;
+TaskHandle_t Button_Pressed;
+TaskHandle_t Read_Inputs;
+TaskHandle_t Ready_To_Drive;
+TaskHandle_t Send_Once;
+TaskHandle_t Enable_Inverter;
+TaskHandle_t Disable_Inverter;
+TaskHandle_t Brake_Handler;
+TaskHandle_t APPS_Handler;
+TaskHandle_t Mission_Handler;
+TaskHandle_t Torque_Command;
+TaskHandle_t Traction_Control;
+TaskHandle_t Power_Limiter;
+TaskHandle_t Heartbeats;
+TaskHandle_t Initial_Check;
+TaskHandle_t ASB_Heartbeat;
+TaskHandle_t AS_Status;
+TaskHandle_t Autonomous_Torque_Command;
+TaskHandle_t Inverter_Rx_Requests;
+
+/* Definition of Software Timers */
+TimerHandle_t PrimaryCanTimer;
+TimerHandle_t AutoCanTimer;
+TimerHandle_t MotorCanTimer;
+
+/* Definition of Event Groups */
+EventGroupHandle_t xPrecharge_EventGroup;
+EventGroupHandle_t xAS_Status_EventGroup;
+EventGroupHandle_t xAS_Status_Enable_EventGroup;
+EventGroupHandle_t xDV_Ready_EventGroup;
+
+EventBits_t Precharge_EventBits;
+EventBits_t AS_Status_EventBits;
+EventBits_t DV_Ready_EventBits;
+
+/* Definition of Semaphores */
+SemaphoreHandle_t xRTDSemaphore;
+SemaphoreHandle_t xBrakeSemaphore;
+SemaphoreHandle_t xAppsSemaphore;
+SemaphoreHandle_t xTCSSemaphore;
+SemaphoreHandle_t xPowerSemaphore;
+SemaphoreHandle_t xInitialCheckSemaphore;
+
+/* Definition of Queues */
+QueueHandle_t xSendOnceQueue;
+HAL_StatusTypeDef QueueStatus,MotorStatus;
+
+/* Definition of Variables */
+const TickType_t airm_interval = 500;
+const TickType_t airp_interval = 3500;
+
+/* Signals */
+uint8_t imd,ams,asb,bspd,ts_off,airm,airp,flag;
+
+/* Flags */
+uint8_t precharge_flag,airm_flag,airp_flag,rtd_flag,inverter_enabled,error_flag,pc_set_flag,power_limit_active;
+uint8_t map_idx,rtd_brake,rtd_apps;
+
+/* Task Notify Values */
+uint32_t fdcan_id;
+
+/* Motor Control Variables */
+int16_t requested_trq;
+uint8_t inv_cnt;
+
+/* Power Limit Variables */
+/* in AmpRMS == 172.5 */
+float i_con = 1.5*115;
+float trq_to_curr = 1.1;
+float auto_target_trq = 0.0;
+
+/* Desired Current aka Torque Command*/
+float i_des = 0.0;
+int16_t lim_trq;
+uint8_t power_limit_active;
+
+/* Torque Command Threshold */
+int16_t trq_threshold = 0;
+
+FDCAN_ErrorCountersTypeDef can1,can2,can3;
+FDCAN_ProtocolStatusTypeDef can1_status,can2_status,can3_status;
+uint32_t can1_OM,can2_OM,can3_OM;
+uint32_t can1_cnt,can2_cnt,can3_cnt;
+/* Implausibility Checks */
+uint8_t apps_plausibility,apps_deviation,brake_plausibility,brake_deviation;
+/* USER CODE END Variables */
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+
+/* Private function prototypes -----------------------------------------------*/
+/* USER CODE BEGIN FunctionPrototypes */
+void Close_Shutdown_Task(void *argument);
+void Open_Shutdown_Task(void *argument);
+void Button_Pressed_Task(void *argument);
+void Read_Inputs_Task(void *argument);
+void Ready_To_Drive_Task(void *argument);
+void Send_Once_Task(void *argument);
+void Enable_Inverter_Task(void *argument);
+void Disable_Inverter_Task(void *argument);
+void Brake_Handler_Task(void  *argument);
+void APPS_Handler_Task(void  *argument);
+void Torque_Command_Task(void *argument);
+void Traction_Control_Task(void *argument);
+void Power_Limiter_Task(void *argument);
+void Heartbeats_Task(void *argument);
+void Initial_Check_Task(void *argument);
+void ASB_Heartbeat_Task(void *argument);
+void AS_Status_Task(void *argument);
+void Mission_Handler_Task(void *argument);
+void Autonomous_Torque_Command_Task(void *argument);
+void Inverter_Rx_Requests_Task(void *argument);
+
+void FDCAN_Tx(TimerHandle_t xTimer);
+
+void SoftwareTimersStart();
+void HardwareTimersStart();
+/* USER CODE END FunctionPrototypes */
+
+void StartDefaultTask(void *argument);
+
+void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
+
+/* Hook prototypes */
+void configureTimerForRunTimeStats(void);
+unsigned long getRunTimeCounterValue(void);
+
+/* USER CODE BEGIN 1 */
+/* Functions needed when configGENERATE_RUN_TIME_STATS is on */
+__weak void configureTimerForRunTimeStats(void)
+{
+
+}
+
+__weak unsigned long getRunTimeCounterValue(void)
+{
+return 0;
+}
+/* USER CODE END 1 */
+
+/**
+  * @brief  FreeRTOS initialization
+  * @param  None
+  * @retval None
+  */
+void MX_FREERTOS_Init(void) {
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+	xRTDSemaphore          = xSemaphoreCreateCounting(3, 1);
+	xInitialCheckSemaphore = xSemaphoreCreateCounting(3, 1);
+	xBrakeSemaphore        = xSemaphoreCreateBinary();
+	xAppsSemaphore         = xSemaphoreCreateBinary();
+	xTCSSemaphore          = xSemaphoreCreateBinary();
+	xPowerSemaphore        = xSemaphoreCreateBinary();
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+	MotorCanTimer   = xTimerCreate("Motor_Timer",  200,pdTRUE,(void *) 0,FDCAN_Tx);
+	PrimaryCanTimer = xTimerCreate("Primary_Timer",100,pdTRUE,(void *) 0,FDCAN_Tx);
+	AutoCanTimer    = xTimerCreate("Auto_Timer",   100,pdTRUE,(void *) 0,FDCAN_Tx);
+
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+	xSendOnceQueue = xQueueCreate(5, sizeof(SendOnceMSG));
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  xTaskCreate(Close_Shutdown_Task,           "Close_Shutdown_Task",      128, NULL, 12, &Close_Shutdown);
+  xTaskCreate(Open_Shutdown_Task,            "Open_Shutdown_Task",       128, NULL, 10, &Open_Shutdown);
+  xTaskCreate(Button_Pressed_Task,           "Button_Pressed_Task",      128, NULL, 10, &Button_Pressed);
+  xTaskCreate(Read_Inputs_Task,              "Read_Inputs_Task",         128, NULL, 10, &Read_Inputs);
+  xTaskCreate(Ready_To_Drive_Task,           "Ready_To_Drive_Task",      128, NULL, 10, &Ready_To_Drive);
+  xTaskCreate(Send_Once_Task,                "Send_Once_Task",           128, NULL, 10, &Send_Once);
+  xTaskCreate(Enable_Inverter_Task,          "Enable_Inverter_Task",     128, NULL, 10, &Enable_Inverter);
+  xTaskCreate(Disable_Inverter_Task,         "Disable_Inverter_Task",    128, NULL, 10, &Disable_Inverter);
+  xTaskCreate(Brake_Handler_Task,            "Brake_Handler_Task",       128, NULL, 10, &Brake_Handler);
+  xTaskCreate(APPS_Handler_Task,             "APPS_Handler_Task",        128, NULL, 10, &APPS_Handler);
+  xTaskCreate(Mission_Handler_Task,          "Mission_Handler_Task",     128, NULL, 10, &Mission_Handler);
+  xTaskCreate(Torque_Command_Task,           "Torque_Command_Task",      128, NULL, 10, &Torque_Command);
+  xTaskCreate(Power_Limiter_Task,            "Power_Limiter_Task",       128, NULL, 10, &Power_Limiter);
+  xTaskCreate(Traction_Control_Task,         "Traction_Control_Task",    128, NULL, 10, &Traction_Control);
+  xTaskCreate(Heartbeats_Task,               "Heartbeats_Task",          128, NULL, 10, &Heartbeats);
+  //xTaskCreate(Initial_Check_Task,            "Initial_Check_Task",       128, NULL, 10, &Initial_Check);
+  xTaskCreate(ASB_Heartbeat_Task,            "ASB_Heartbeat_Task",       128, NULL, 10, &ASB_Heartbeat);
+  xTaskCreate(AS_Status_Task,                "AS_Status_Task",           128, NULL, 10, &AS_Status);
+  //xTaskCreate(Autonomous_Torque_Command_Task,"Autonomous_Torque_Command",128, NULL, 10, &Autonomous_Torque_Command);
+  xTaskCreate(Inverter_Rx_Requests_Task,     "Inverter_Rx_Requests",     128, NULL, 10, &Inverter_Rx_Requests);
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  xPrecharge_EventGroup = xEventGroupCreate();
+  xAS_Status_EventGroup = xEventGroupCreate();
+  xDV_Ready_EventGroup  = xEventGroupCreate();
+  xAS_Status_Enable_EventGroup = xEventGroupCreate();
+
+  /* Start Peripherals */
+  ADC_Start();
+  FDCAN_Start();
+  SoftwareTimersStart();
+  HardwareTimersStart();
+  /* USER CODE END RTOS_EVENTS */
+
+}
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN StartDefaultTask */
+  /* Infinite loop */
+	while(1){
+		osDelay(50);
+	}
+  /* USER CODE END StartDefaultTask */
+}
+
+/* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
+void Button_Pressed_Task(void *argument){
+	while(1){
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		if(pc_pressed && !precharge_flag && Mission.locked == 1 && !(imd||ams||bspd)){
+			xEventGroupSetBits(xPrecharge_EventGroup, PC_PRESSED);
+			pc_pressed = 0;
+		}
+		else if(pc_pressed && precharge_flag){
+			xEventGroupClearBits(xPrecharge_EventGroup, PC_PRESSED);
+			xTaskNotify(Open_Shutdown,0,eNoAction);
+		}
+
+		if(rtd_pressed && !rtd_flag && Mission.manual){
+			rtd_pressed = 0;
+			xTaskNotify(Ready_To_Drive,0,eNoAction);
+		}
+		else if(rtd_pressed && rtd_flag && Mission.manual){
+			rtd_flag = 0;
+
+			SendOnceMSG.hfdcan = hfdcan2;
+			SendOnceMSG.TxHeader.Identifier = 0x308;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+			SendOnceMSG.TxData[0] = precharge_flag<<0;
+			SendOnceMSG.TxData[0] |= rtd_flag<<1;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+
+			xSemaphoreTake(xRTDSemaphore,0);
+			if(inverter_enabled){
+				xTaskNotify(Disable_Inverter,0,eNoAction);
+			}
+		}
+
+		if(rtd_auto && Mission.autonomous && !rtd_flag){
+			rtd_auto = 0;
+			xTaskNotify(Ready_To_Drive,0,eNoAction);
+		}
+		osDelay(5);
+	}
+}
+
+void Read_Inputs_Task(void *argument){
+	while(1){
+		/* Read Input Digital Signals */
+		imd = HAL_GPIO_ReadPin(GPIOE,IMD_Pin);
+		ams = HAL_GPIO_ReadPin(GPIOF,AMS_Pin);
+		asb = HAL_GPIO_ReadPin(GPIOF,ASB_Pin);
+//		bspd = HAL_GPIO_ReadPin(GPIOB,BSPD_Pin);
+		airp = HAL_GPIO_ReadPin(GPIOF,AIRP_Pin);
+		airm = HAL_GPIO_ReadPin(GPIOC,AIRM_Pin);
+		ts_off = HAL_GPIO_ReadPin(GPIOA,TS_OFF_Pin);
+
+		bspd = 0;
+		ts_off = !ts_off;
+
+		if(imd || ams || bspd){
+			xTaskNotify(Open_Shutdown,0,eNoAction);
+		}
+
+		/* If an error occurs or the AIRs are opened (for at least 300ms), open SD Relay!
+		 * Note: SD Relay is actually opened only if Pre-charge is also done! */
+		if((airm || airp) && precharge_flag){
+			xTaskNotify(Open_Shutdown,0,eNoAction);
+		}
+
+		/* If no errors are present and the AIRs are open, set PRECHARGE flag */
+		if(!(imd||ams||bspd) && airp && airm){
+			pc_set_flag = 1;
+			xEventGroupSetBits(xPrecharge_EventGroup, PRECHARGE);
+		}
+		else{
+			xEventGroupClearBits(xPrecharge_EventGroup, PRECHARGE);
+		}
+
+		/* If AIR- is closed, set AIRM flag */
+		if(!airm){
+			airm_flag = 1;
+			xEventGroupSetBits(xPrecharge_EventGroup, AIRM);
+		}
+		else if(airm){
+			airm_flag = 0;
+			xEventGroupClearBits(xPrecharge_EventGroup, AIRM);
+		}
+		/* If AIR+ is closed, set AIRP flag */
+		if(!airp){
+			airp_flag = 1;
+			xEventGroupSetBits(xPrecharge_EventGroup, AIRP);
+		}
+		else if(airp){
+			airp_flag = 0;
+			xEventGroupClearBits(xPrecharge_EventGroup, AIRP);
+		}
+
+		if(xTaskGetTickCount() > last_measurement + 150){
+			rpm_fl = 0;
+			rpm_fr = 0;
+			rpm_rl = 0;
+			rpm_rr = 0;
+		}
+
+		HAL_FDCAN_GetErrorCounters(&hfdcan1,&can1);
+		HAL_FDCAN_GetErrorCounters(&hfdcan2,&can2);
+		HAL_FDCAN_GetErrorCounters(&hfdcan3,&can3);
+
+		HAL_FDCAN_GetProtocolStatus(&hfdcan1,&can1_status);
+		HAL_FDCAN_GetProtocolStatus(&hfdcan2,&can2_status);
+		HAL_FDCAN_GetProtocolStatus(&hfdcan3,&can3_status);
+
+		can1_OM = HAL_FDCAN_IsRestrictedOperationMode(&hfdcan1);
+		can2_OM = HAL_FDCAN_IsRestrictedOperationMode(&hfdcan2);
+		can3_OM = HAL_FDCAN_IsRestrictedOperationMode(&hfdcan3);
+//
+//		if(can2.RxErrorCnt == 240){
+//			hfdcan2.Instance->ECR & FDCAN_ECR_REC = FDCAN_ECR_REC;
+//		}
+		if(can1_status.BusOff == 1){
+			// Clear the Bus Off state (TEC and REC will be reset)
+			can1_cnt++;
+			FDCAN1->CCCR &= ~FDCAN_CCCR_INIT_Msk; // Clear INIT bit to 0 to exit Initialization mode
+		}
+
+		if(can2_status.BusOff == 1){
+			// Clear the Bus Off state (TEC and REC will be reset)
+			can2_cnt++;
+			FDCAN2->CCCR &= ~FDCAN_CCCR_INIT_Msk; // Clear INIT bit to 0 to exit Initialization mode
+		}
+
+		if(can3_status.BusOff == 1){
+			// Clear the Bus Off state (TEC and REC will be reset)
+			can3_cnt++;
+			FDCAN3->CCCR &= ~FDCAN_CCCR_INIT_Msk; // Clear INIT bit to 0 to exit Initialization mode
+		}
+		/* Read GPIOs every 100 milliseconds */
+		osDelay(100);
+	}
+}
+
+void Close_Shutdown_Task(void *argument){
+	while(1){
+		/* Block until PC checks OK and PC button pressed and when unblocked close SD */
+		Precharge_EventBits = xEventGroupWaitBits(xPrecharge_EventGroup,MISSION_LOCKED|PRECHARGE|PC_PRESSED,pdTRUE,pdTRUE,portMAX_DELAY);
+		if(Precharge_EventBits == 38){
+			HAL_GPIO_WritePin(GPIOE,SD_COIL_Pin,GPIO_PIN_SET);
+			/* Block until AIRM closes. When unblocked check if No Errors, PC Not Pressed and AIRM closed and time didn't expire. */
+			/* If not notify task to open SD */ // 46
+			Precharge_EventBits = xEventGroupWaitBits(xPrecharge_EventGroup,AIRM,pdTRUE,pdTRUE,airm_interval);
+			if(Precharge_EventBits == 8){
+				/* Block until AIRP closes. When unblocked check if No Errors, PC Not Pressed and AIRs closed and time didn't expire */
+				/* If not notify task to open SD */ // 62
+				Precharge_EventBits = xEventGroupWaitBits(xPrecharge_EventGroup,AIRP,pdTRUE,pdTRUE,airp_interval);
+				if(Precharge_EventBits == 24) {
+					/* Successful Pre-charge! Notify Dash-board PC is done and increment RTD semaphore */
+					precharge_flag = 1;
+					xSemaphoreGive(xRTDSemaphore);
+					SendOnceMSG.hfdcan = hfdcan2;
+					SendOnceMSG.TxHeader.Identifier = PRIMARY_TO_DASH_2;
+					SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+					SendOnceMSG.TxData[0] = precharge_flag;
+					xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+
+					if(Mission.autonomous) xEventGroupSetBits(xAS_Status_EventGroup, TS_ACTIVE);
+
+					//Critical Section? and if Queue is full then task is blocked!!!
+				}
+				else {
+					xTaskNotify(Open_Shutdown,0,eNoAction);
+				}
+			}
+			else {
+				xTaskNotify(Open_Shutdown,0,eNoAction);
+			}
+		}
+		else{
+			xTaskNotify(Open_Shutdown,0,eNoAction);
+		}
+		osDelay(5);
+	}
+}
+
+void Open_Shutdown_Task(void *argument){
+	while(1){
+		/* Open SD Relay! If Pre-charge and RTD were done successfully decrement semaphore accordingly */
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		/* Critical Section?? */
+		/* Open VCU SD Relay! */
+		HAL_GPIO_WritePin(GPIOE,SD_COIL_Pin,GPIO_PIN_RESET);
+
+		/* Clear Event Group Flags */
+		xEventGroupClearBits(xPrecharge_EventGroup, PC_PRESSED);
+		xEventGroupClearBits(xPrecharge_EventGroup,MISSION_LOCKED);
+		xEventGroupClearBits(xAS_Status_EventGroup,BRAKES_ENGAGED);
+		xEventGroupClearBits(xAS_Status_EventGroup,ASB_OK);
+		xEventGroupClearBits(xAS_Status_EventGroup,MISSION_SELECTED);
+		xEventGroupClearBits(xDV_Ready_EventGroup,DV_READY);
+		Mission.locked = 0;
+		rtd_brake = 0;
+		rtd_apps = 0;
+
+		/* Notify everyone that Mission is unlocked! */
+		SendOnceMSG.hfdcan = hfdcan3;
+		SendOnceMSG.TxHeader.Identifier = AUTONOMOUS_FROM_DASH_1;
+		SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+		SendOnceMSG.TxData[0] = 0;
+		xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+		osDelay(50);
+
+		/* If PC is done decrement RTD semaphore, notify dash and clear AS Status flag */
+		if(precharge_flag){
+			precharge_flag = 0;
+			xSemaphoreTake(xRTDSemaphore,0);
+			SendOnceMSG.hfdcan = hfdcan2;
+			SendOnceMSG.TxHeader.Identifier = PRIMARY_TO_DASH_2;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+			SendOnceMSG.TxData[0] = precharge_flag;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+			if(Mission.autonomous) xEventGroupClearBits(xAS_Status_EventGroup, TS_ACTIVE);
+		}
+
+		/* If car was in RTD mode decrement RTD semaphore, clear AS Status flags and disable inverter */
+		if(rtd_flag){
+			rtd_flag = 0;
+			xSemaphoreTake(xRTDSemaphore,0);
+			if(Mission.autonomous) xEventGroupClearBits(xAS_Status_EventGroup, RTD_MODE);
+			xTaskNotify(Disable_Inverter,0,eNoAction);
+		}
+		//osDelay(1);
+	}
+}
+
+void Ready_To_Drive_Task(void *argument){
+	while(1){
+		/* Unblocked when Pre-charge is done (sem = 2), brake pressure is sufficient (sem = 3) and
+		 * RTD button is pressed (task notified). Then notify Dash-board car is in RTD mode */
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		if(uxSemaphoreGetCount(xRTDSemaphore) == 3 && Mission.manual){
+			rtd_flag = 1;
+			/* Critical Section?? */
+			SendOnceMSG.hfdcan = hfdcan2;
+			SendOnceMSG.TxHeader.Identifier = 0x308;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+			SendOnceMSG.TxData[0] = precharge_flag<<0;
+			SendOnceMSG.TxData[0] |= rtd_flag<<1;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+		}
+		else if(uxSemaphoreGetCount(xRTDSemaphore) == 3 && Mission.autonomous && as_ready_delay){
+			xEventGroupClearBits(xAS_Status_EventGroup,BRAKES_ENGAGED);
+			xEventGroupSetBits(xAS_Status_EventGroup, RTD_MODE);
+
+			rtd_flag = 1;
+			SendOnceMSG.hfdcan = hfdcan2;
+			SendOnceMSG.TxHeader.Identifier = 0x308;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+			SendOnceMSG.TxData[0] = precharge_flag<<0;
+			SendOnceMSG.TxData[0] |= rtd_flag<<1;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+		}
+		//osDelay(5);
+	}
+}
+
+void Send_Once_Task(void  *argument){
+	while(1){
+		/* Unblocked when the queue has at least one message pending */
+		xQueueReceive(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+		QueueStatus = HAL_FDCAN_AddMessageToTxFifoQ(&SendOnceMSG.hfdcan,&SendOnceMSG.TxHeader,SendOnceMSG.TxData)!= HAL_OK;
+		osDelay(5);
+	}
+}
+
+void Enable_Inverter_Task(void  *argument){
+	while(1){
+		/* Unblocked when car is in RTD mode and APPS > 5 */
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+
+		/* Set Inverter Enabled flag */
+		inverter_enabled = 1;
+
+		/* Set which torque map will be used */
+		map_idx = 1;
+
+		/* Critical Section?? */
+		/* Lock inverter  */
+		MotorCan.TxHeader.Identifier = 0x10;
+		MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+		MotorCan.TxData[0] = 0x51;
+		MotorCan.TxData[1] = 0x04;
+		MotorCan.TxData[2] = 0x00;
+		HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+
+		osDelay(50);
+		/* Enable drive */
+		MotorCan.TxHeader.Identifier = 0x10;
+		MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+		MotorCan.TxData[0] = 0x51;
+		MotorCan.TxData[2] = 0x00;
+		MotorCan.TxData[1] = 0x00;
+		HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+
+		HAL_GPIO_WritePin(GPIOA, MCU1_Pin,GPIO_PIN_SET);
+		//osDelay(5);
+	}
+}
+
+void Disable_Inverter_Task(void  *argument){
+	while(1){
+		/* Unblocked when SD is opened or when car is in RTD mode but APPS <= 5 */
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+
+		/* Clear RTD flags */
+		rtd_brake = 0;
+		rtd_apps = 0;
+		inverter_enabled = 0;
+		requested_trq = 0;
+
+		/* Critical Section?? */
+		/* Send zero torque command */
+		MotorCan.TxHeader.Identifier = 0x10;
+		MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+		MotorCan.TxData[0] = 0x90;
+		MotorCan.TxData[1] = 0x00;
+		MotorCan.TxData[2] = 0x00;
+		HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+
+		osDelay(50);
+		/* Disable inverter */
+		MotorCan.TxHeader.Identifier = 0x10;
+		MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+		MotorCan.TxData[0] = 0x51;
+		MotorCan.TxData[1] = 0x04;
+		MotorCan.TxData[2] = 0x00;
+		HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+
+		HAL_GPIO_WritePin(GPIOA, MCU1_Pin,GPIO_PIN_RESET);
+		//osDelay(5);
+	}
+}
+
+void Brake_Handler_Task(void  *argument){
+	while(1){
+		/* Data processing from ADC 3.
+		 * If brake pressure > 9 and Pre-charge is done (sem = 2), increment RTD semaphore. */
+		xSemaphoreTake(xBrakeSemaphore,portMAX_DELAY);
+
+		if(brf != 255 && brr != 255) {
+			brake_plausibility = 0;
+		}
+		else {
+			brake_plausibility = 1;
+		}
+
+		if((abs(brf - brr) < 60) && brf != 255 && brr != 255) {
+			brake_deviation = 0;
+		}
+		else {
+			brake_deviation = 1;
+		}
+
+		if(brf < 0.2){
+			brf = 255.0;
+		}
+		else{
+			brf = (brf - 0.6) / 0.04;
+		}
+
+		if(brr < 0.2){
+			brr = 255.0;
+		}
+		else{
+			brr = (brr - 0.6) / 0.04;
+		}
+
+		if(brf > 5 && uxSemaphoreGetCount(xRTDSemaphore) == 2){
+			xSemaphoreGive(xRTDSemaphore);
+		}
+		else if(brf <= 5 && uxSemaphoreGetCount(xRTDSemaphore) == 3 && !rtd_flag){
+			xSemaphoreTake(xRTDSemaphore,0);
+			rtd_brake = 0;
+		}
+
+		if(brf > 10 && Mission.autonomous && !rtd_flag) {
+			xEventGroupSetBits(xAS_Status_EventGroup,BRAKES_ENGAGED);
+		}
+		osDelay(10);
+	}
+}
+
+void APPS_Handler_Task(void  *argument){
+	while(1){
+		/* Data processing from ADC 1,2.
+		 * If car is in RTD mode and APPS > 5, notify Enable_Inverter Task.
+		 * If APPS > 5 and inverter is enabled, notify Torque_Command Task.
+		 * If inverter is enabled but APPS < 5, then notify Disable_Inverter Task */
+
+		xSemaphoreTake(xAppsSemaphore,portMAX_DELAY);
+
+		if(apps1 != 255 && apps2 != 255) {
+			apps_plausibility = 0;
+		}
+		else {
+			apps_plausibility = 1;
+		}
+
+		if(abs(apps1 - apps2) < 20 && apps1 != 255 && apps2 != 255) {
+			apps_deviation = 0;
+		}
+		else {
+			apps_deviation = 1;
+		}
+
+		if(!apps_plausibility && !apps_deviation){
+			apps = (apps1 + apps2)/2;
+//			apps = apps1;
+
+			if(apps > 100) apps = 100;
+
+			if(apps > 5 && !rtd_apps && rtd_flag && Mission.manual){
+				rtd_apps = 1;
+				xTaskNotify(Enable_Inverter,0,eNoAction);
+			}
+
+			if(apps > 5 && inverter_enabled && Mission.manual){
+				xTaskNotify(Torque_Command,0,eNoAction);
+			}
+
+			if(apps <= 5 && inverter_enabled && Mission.manual){
+				xTaskNotify(Disable_Inverter,0,eNoAction);
+			}
+		}
+		else{
+			apps = 0;
+			xTaskNotify(Disable_Inverter,0,eNoAction);
+		}
+		osDelay(10);
+	}
+}
+
+void Mission_Handler_Task(void *argument){
+	while(1){
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+
+		if(Mission.event != 0 && !Mission.locked){
+			SendOnceMSG.hfdcan = hfdcan3;
+			SendOnceMSG.TxHeader.Identifier = AUTONOMOUS_TO_DASH_1;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_1;
+			SendOnceMSG.TxData[0] = Mission.event;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+		}
+		else if(Mission.event == MANUAL && Mission.locked){
+			Mission.manual = 1;
+			Mission.autonomous = 0;
+			xEventGroupSetBits(xPrecharge_EventGroup,MISSION_LOCKED);
+			xEventGroupSetBits(xAS_Status_EventGroup,MISSION_SELECTED);
+			xEventGroupClearBits(xAS_Status_EventGroup,AUTONOMOUS_MODE);
+		}
+		else if(Mission.event != MANUAL && Mission.locked){
+			Mission.autonomous = 1;
+			Mission.manual = 0;
+
+			SendOnceMSG.hfdcan = hfdcan3;
+			SendOnceMSG.TxHeader.Identifier = AUTONOMOUS_TO_RES;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_2;
+			SendOnceMSG.TxData[0] = 0x01;
+			SendOnceMSG.TxData[1] = 0x00;
+			xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+
+			xEventGroupSetBits(xAS_Status_EventGroup,AUTONOMOUS_MODE);
+			xEventGroupSetBits(xAS_Status_EventGroup,MISSION_SELECTED);
+			xEventGroupSetBits(xPrecharge_EventGroup,MISSION_LOCKED);
+		}
+		else if(Mission.event == 0 && !Mission.locked){
+			Mission.autonomous = 0;
+			Mission.manual = 0;
+			xEventGroupClearBits(xPrecharge_EventGroup,MISSION_LOCKED);
+			xEventGroupClearBits(xPrecharge_EventGroup,MISSION_SELECTED);
+		}
+		osDelay(5);
+	}
+}
+
+void Torque_Command_Task(void *argument){
+	while(1){
+		/* Block until Inverter enabled and APPS > 5. Then, check if TCS is activated and execute the respective code.
+		 * Also, unblock Power_Limiter Task and finally, fill in the next torque command data */
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+
+		requested_trq = -trq[apps][map_idx];
+//		if(xSemaphoreTake(xTCSSemaphore,0) == pdPASS){
+//			xTaskNotify(Traction_Control,0,eNoAction);
+//		}
+//		xSemaphoreGive(xPowerSemaphore);
+
+		if(motor_rpm == 0){
+			i_des = i_con*1.1;
+		}
+		else if(motor_rpm > 0){
+			/* Torque in N*m */
+			i_des = max_power*60/(motor_rpm*2*3.14159265359);
+		}
+		/* Current in AmpRms */
+		i_des = i_des/trq_to_curr;
+
+		if(i_des/i_con >= 1){
+			i_des = -32767;
+		}
+		else{
+			i_des = (-18000.0)*i_des/i_con;
+		}
+
+		lim_trq = i_des;
+		requested_trq = max(requested_trq,lim_trq);
+		requested_trq = min(requested_trq,0);
+
+//		if((requested_trq > -22000) && (requested_trq < 0))
+//		{
+			MotorCan.TxData[1] = requested_trq;
+			MotorCan.TxData[2] = requested_trq >> 8;
+
+			if(requested_trq == lim_trq){
+				power_limit_active = 1;
+			}
+
+			MotorCan.TxHeader.Identifier = 0x10;
+			MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+			MotorCan.TxData[0] = 0x90;
+			HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+
+		HAL_GPIO_TogglePin(GPIOD, MOTOR_Pin);
+//		}
+//		else {
+//			requested_trq = 0;
+//			MotorCan.TxHeader.Identifier = 0x10;
+//			MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+//			MotorCan.TxData[0] = 0x90;
+//			MotorCan.TxData[1] = requested_trq;
+//			MotorCan.TxData[2] = requested_trq>>8;
+//			HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+//		}
+		osDelay(100);
+	}
+}
+
+void Power_Limiter_Task(void *argument){
+	while(1){
+		xSemaphoreTake(xPowerSemaphore,portMAX_DELAY);
+		osDelay(5);
+	}
+}
+
+void Traction_Control_Task(void *argument){
+	while(1){
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		/* P22's Traction Control Code */
+		osDelay(5);
+	}
+}
+
+void Autonomous_Torque_Command_Task(void *argument){
+	while(1){
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		HAL_GPIO_TogglePin(GPIOD, MOTOR_Pin);
+
+		auto_target_trq = auto_trq_req;
+
+		//Calculate I_des(RMS) from Nm request (auto_trq_req)
+		i_des = auto_target_trq/1.1;
+
+		//Calculate numerical torque command (with max peak I = 2A)
+		requested_trq = 500 *i_des*1.5/2;
+
+		if(requested_trq <= 500){
+
+			MotorCan.TxHeader.Identifier = 0x10;
+			MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+			MotorCan.TxData[0] = 0x90;
+			MotorCan.TxData[1] = requested_trq;
+			MotorCan.TxData[2] = requested_trq>>8;
+			//MotorStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+		}
+		else if(requested_trq == 0){
+			xTaskNotify(Disable_Inverter,0,eNoAction);
+		}
+		else{
+			MotorCan.TxHeader.Identifier = 0x10;
+			MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+			MotorCan.TxData[0] = 0x90;
+			MotorCan.TxData[1] = 0;
+			MotorCan.TxData[2] = 0;
+			//MotorStatus = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1,&MotorCan.TxHeader,MotorCan.TxData);
+		}
+		osDelay(5);
+	}
+}
+
+void Inverter_Rx_Requests_Task(void *argument){
+	while(1){
+//		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+
+		if(!flag){
+			SendOnceMSG.hfdcan = hfdcan1;
+			SendOnceMSG.TxHeader.Identifier = 0x10;
+			SendOnceMSG.TxHeader.DataLength = FDCAN_DLC_BYTES_3;
+			SendOnceMSG.TxData[0] = 0x3D;
+			SendOnceMSG.TxData[2] = 0xFA;
+
+			switch(inv_cnt){
+			case 0:
+				SendOnceMSG.TxData[1] = 0x8F;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 1:
+				SendOnceMSG.TxData[1] = 0x4A;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 2:
+				SendOnceMSG.TxData[1] = 0x49;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 3:
+				SendOnceMSG.TxData[1] = 0x8A;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 4:
+				SendOnceMSG.TxData[1] = 0x40;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 5:
+				SendOnceMSG.TxData[1] = 0xEB;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 6:
+				SendOnceMSG.TxData[1] = 0x5F;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 7:
+				SendOnceMSG.TxData[1] = 0xA0;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 8:
+				SendOnceMSG.TxData[1] = 0xA8;
+				inv_cnt++;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			case 9:
+				SendOnceMSG.TxData[1] = 0x64;
+				inv_cnt = 0;
+				flag = 1;
+				xQueueSendToBack(xSendOnceQueue,&SendOnceMSG,portMAX_DELAY);
+				break;
+			default:
+				break;
+			}
+		}
+		osDelay(50);
+	}
+}
+
+void Heartbeats_Task(void *argument){
+	while(1){
+		xTaskNotifyWait(0,0,NULL,portMAX_DELAY);
+		osDelay(5);
+	}
+}
+/* USER CODE END Application */
+

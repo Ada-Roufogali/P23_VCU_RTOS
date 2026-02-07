@@ -1,0 +1,7 @@
+../Core/Src/main.c:65:7:configureTimerForRunTimeStats	1
+../Core/Src/main.c:69:16:getRunTimeCounterValue	1
+../Core/Src/main.c:78:5:main	1
+../Core/Src/main.c:143:6:SystemClock_Config	4
+../Core/Src/main.c:201:6:PeriphCommonClock_Config	2
+../Core/Src/main.c:234:6:HAL_TIM_PeriodElapsedCallback	5
+../Core/Src/main.c:260:6:Error_Handler	1

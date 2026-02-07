@@ -1,0 +1,9 @@
+../Core/Src/adc.c:50:6:MX_ADC1_Init	56	static
+../Core/Src/adc.c:122:6:MX_ADC2_Init	48	static
+../Core/Src/adc.c:176:6:MX_ADC3_Init	48	static
+../Core/Src/adc.c:244:6:HAL_ADC_MspInit	72	static
+../Core/Src/adc.c:393:6:HAL_ADC_MspDeInit	16	static
+../Core/Src/adc.c:469:6:HAL_ADC_ConvCpltCallback	32	static,ignoring_inline_asm
+../Core/Src/adc.c:535:6:ADC_Start	8	static
+../Core/Src/adc.c:540:9:map1	16	static
+../Core/Src/adc.c:551:9:map2	16	static

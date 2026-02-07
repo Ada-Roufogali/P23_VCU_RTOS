@@ -1,0 +1,17 @@
+20:24:07 **** Incremental Build of configuration Debug for project P23_VCU_RTOS ****
+make -j8 all 
+arm-none-eabi-gcc "../Core/Src/freertos.c" -mcpu=cortex-m7 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32H723xx -c -I../Core/Inc -I../Drivers/STM32H7xx_HAL_Driver/Inc -I../Drivers/STM32H7xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32H7xx/Include -I../Drivers/CMSIS/Include -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/freertos.d" -MT"Core/Src/freertos.o" --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -o "Core/Src/freertos.o"
+arm-none-eabi-gcc -o "P23_VCU_RTOS.elf" @"objects.list"   -mcpu=cortex-m7 -T"C:\Users\adaro\STM32CubeIDE\workspace_VCU_new\P23_VCU_RTOS (3)\P23_VCU_RTOS\STM32H723ZGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="P23_VCU_RTOS.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Finished building target: P23_VCU_RTOS.elf
+ 
+arm-none-eabi-size   P23_VCU_RTOS.elf 
+arm-none-eabi-objdump -h -S  P23_VCU_RTOS.elf  > "P23_VCU_RTOS.list"
+   text	   data	    bss	    dec	    hex	filename
+  87076	   2116	  23228	 112420	  1b724	P23_VCU_RTOS.elf
+Finished building: default.size.stdout
+ 
+Finished building: P23_VCU_RTOS.list
+ 
+
+20:24:09 Build Finished. 0 errors, 0 warnings. (took 2s.103ms)
+

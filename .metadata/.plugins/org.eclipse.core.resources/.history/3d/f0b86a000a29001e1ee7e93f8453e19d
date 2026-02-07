@@ -1,0 +1,105 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    adc.h
+  * @brief   This file contains all the function prototypes for
+  *          the adc.c file
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __ADC_H__
+#define __ADC_H__
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* USER CODE BEGIN Includes */
+
+/* USER CODE END Includes */
+
+extern ADC_HandleTypeDef hadc1;
+
+extern ADC_HandleTypeDef hadc2;
+
+extern ADC_HandleTypeDef hadc3;
+
+/* USER CODE BEGIN Private defines */
+#define ADC1_BUF_LEN 2
+#define ADC2_BUF_LEN 1
+#define ADC3_BUF_LEN 2
+
+/* APPS1 Defines */
+#define app1_min 149
+#define app1_max 202
+#define map_min_thres1 148
+#define map_max_thres1 203
+
+/*APPS2 Defines */
+#define app2_min 232
+#define app2_max 195
+#define map_min_thres2 194 //222
+#define map_max_thres2 233
+
+/*Break Pressure Front Defines */
+#define brpr1_min 186
+#define brpr1_max 128
+#define map_min_thres3 125
+#define map_max_thres3 187
+#define rtd_brpr 5
+
+/*Break Pressure Rear Defines */
+#define brpr2_min 186
+#define brpr2_max 128
+#define map_min_thres4 125
+#define map_max_thres4 187
+
+typedef struct ADC_1{
+	volatile uint32_t cnt,channel1,channel2;
+	const uint32_t max;
+	uint16_t data[ADC1_BUF_LEN];
+}ADC1Struct;
+
+typedef struct ADC_2{
+	volatile uint32_t cnt,channel1;
+	const uint32_t max;
+	uint16_t data[ADC2_BUF_LEN];
+}ADC2Struct;
+
+typedef struct ADC_3{
+	volatile uint32_t cnt,channel1,channel2;
+	const uint32_t max;
+	uint16_t data[ADC3_BUF_LEN];
+}ADC3Struct;
+/* USER CODE END Private defines */
+
+void MX_ADC1_Init(void);
+void MX_ADC2_Init(void);
+void MX_ADC3_Init(void);
+
+/* USER CODE BEGIN Prototypes */
+void ADC_Start();
+uint8_t map1(uint16_t x, uint16_t in_min, uint16_t in_max, uint16_t out_min, uint16_t out_max, uint16_t map_min_thres, uint16_t map_max_thres);
+uint8_t map2(uint16_t x, uint16_t in_min, uint16_t in_max, uint16_t out_min, uint16_t out_max, uint16_t map_min_thres, uint16_t map_max_thres);
+/* USER CODE END Prototypes */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __ADC_H__ */
+

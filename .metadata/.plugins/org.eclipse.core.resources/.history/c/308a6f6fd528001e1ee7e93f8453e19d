@@ -1,0 +1,921 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    fdcan.c
+  * @brief   This file provides code for the configuration
+  *          of the FDCAN instances.
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2023 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "fdcan.h"
+
+/* USER CODE BEGIN 0 */
+#include "shared_variables.h"
+
+/* Inverter RX Variables */
+volatile uint16_t int_dc_bus_voltage, int_inv_vout,int_iact ;
+volatile int16_t actual_trq;
+volatile int16_t motor_rpm;
+volatile uint8_t curr_lim_reached, curr_lim_igbt_temp, curr_lim_motor_temp,
+curr_peak_val_warn, defective_param, hardware_fault, faulty_safety_circuit,
+can_time_out_exceeded, bad_encoder_signal, no_power_supply_voltage, overvoltage,
+overcurrent, current_measure_fault,ballast_circuit_overload, faulty_run_signal_emi,
+inactive_rfe, power_supply_missing_or_too_low, output_voltage_limit_reached,
+overcurrent_200,ballast_circuit_overload_87, inv_enable, inv_ok;
+volatile float Fiact, Fdc_bus_voltage, Finv_vout,float_helper;
+volatile int16_t int_helper;
+volatile uint16_t igbt_temp , motor_temp;
+volatile float temp_helper;
+
+
+/*Definition of FDCAN structs */
+
+MotorStruct    MotorCan;
+PrimaryStruct  PrimaryCan;
+AutoStruct     AutoCan;
+SendOnceStruct SendOnceMSG;
+
+/* Motor Variables */
+/* Primary Variables */
+
+uint8_t pc_pressed,rtd_pressed,regen_pressed,airm_st,airp_st,airm_sp,airp_sp,vcu_hb;
+MissionStruct Mission;
+volatile uint8_t power_limit,def;
+/* Tx Counter */
+uint8_t primary_tx_cnt;
+
+/* Autonomous Variables */
+
+uint8_t initial_check_started,asms,ebs_activated,rtd_auto,dv_status,asb_ok,sd_res;
+volatile int16_t motor_rpm;
+float auto_trq_req;
+
+/* Tx Counter */
+uint8_t auto_tx_cnt;
+HAL_StatusTypeDef auto_status;
+
+/* Heartbeats */
+uint8_t dashboard_HB,asb_HB,asb_HB_previous;
+
+/* Flags */
+uint8_t pc_flag,tcs_flag,fake_mission;
+
+/* Task Notify Values */
+uint8_t initial_check_current,initial_check_previous;
+
+/* Higher Priority Tokens */
+BaseType_t xHigherPriorityPCPressed,xHigherPriorityRTD_B_Pressed,xHigherPriorityTCS,xHigherPriorityASB,xHigherPriorityAutonomous,
+xHigherPriorityAS_Status;
+
+/* USER CODE END 0 */
+
+FDCAN_HandleTypeDef hfdcan1;
+FDCAN_HandleTypeDef hfdcan2;
+FDCAN_HandleTypeDef hfdcan3;
+
+/* FDCAN1 init function */
+void MX_FDCAN1_Init(void)
+{
+
+  /* USER CODE BEGIN FDCAN1_Init 0 */
+
+  /* USER CODE END FDCAN1_Init 0 */
+
+  /* USER CODE BEGIN FDCAN1_Init 1 */
+
+  /* USER CODE END FDCAN1_Init 1 */
+  hfdcan1.Instance = FDCAN1;
+  hfdcan1.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+  hfdcan1.Init.Mode = FDCAN_MODE_NORMAL;
+  hfdcan1.Init.AutoRetransmission = ENABLE;
+  hfdcan1.Init.TransmitPause = DISABLE;
+  hfdcan1.Init.ProtocolException = ENABLE;
+  hfdcan1.Init.NominalPrescaler = 1;
+  hfdcan1.Init.NominalSyncJumpWidth = 16;
+  hfdcan1.Init.NominalTimeSeg1 = 63;
+  hfdcan1.Init.NominalTimeSeg2 = 16;
+  hfdcan1.Init.DataPrescaler = 1;
+  hfdcan1.Init.DataSyncJumpWidth = 4;
+  hfdcan1.Init.DataTimeSeg1 = 5;
+  hfdcan1.Init.DataTimeSeg2 = 4;
+  hfdcan1.Init.MessageRAMOffset = 0;
+  hfdcan1.Init.StdFiltersNbr = 1;
+  hfdcan1.Init.ExtFiltersNbr = 0;
+  hfdcan1.Init.RxFifo0ElmtsNbr = 1;
+  hfdcan1.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan1.Init.RxFifo1ElmtsNbr = 0;
+  hfdcan1.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan1.Init.RxBuffersNbr = 0;
+  hfdcan1.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
+  hfdcan1.Init.TxEventsNbr = 0;
+  hfdcan1.Init.TxBuffersNbr = 0;
+  hfdcan1.Init.TxFifoQueueElmtsNbr = 1;
+  hfdcan1.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
+  hfdcan1.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
+  if (HAL_FDCAN_Init(&hfdcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN FDCAN1_Init 2 */
+  HAL_FDCAN_ConfigGlobalFilter(&hfdcan1, FDCAN_REJECT, FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
+
+  MotorCan.Filter.IdType = FDCAN_STANDARD_ID;
+  MotorCan.Filter.FilterIndex = 0;
+  MotorCan.Filter.FilterType = FDCAN_FILTER_MASK;
+  MotorCan.Filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  MotorCan.Filter.FilterID1 = 0x00; //Filter
+  MotorCan.Filter.FilterID2 = 0x00; //Mask
+  MotorCan.Filter.RxBufferIndex = 0;
+
+  if (HAL_FDCAN_ConfigFilter(&hfdcan1, &MotorCan.Filter) != HAL_OK){
+  Error_Handler();
+  }
+
+  MotorCan.TxHeader.IdType = FDCAN_STANDARD_ID;
+  MotorCan.TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+  MotorCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+  MotorCan.TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  MotorCan.TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+  MotorCan.TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+  MotorCan.TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  MotorCan.TxHeader.MessageMarker = 0;
+  /* USER CODE END FDCAN1_Init 2 */
+
+}
+/* FDCAN2 init function */
+void MX_FDCAN2_Init(void)
+{
+
+  /* USER CODE BEGIN FDCAN2_Init 0 */
+
+  /* USER CODE END FDCAN2_Init 0 */
+
+  /* USER CODE BEGIN FDCAN2_Init 1 */
+
+  /* USER CODE END FDCAN2_Init 1 */
+  hfdcan2.Instance = FDCAN2;
+  hfdcan2.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+  hfdcan2.Init.Mode = FDCAN_MODE_NORMAL;
+  hfdcan2.Init.AutoRetransmission = ENABLE;
+  hfdcan2.Init.TransmitPause = DISABLE;
+  hfdcan2.Init.ProtocolException = ENABLE;
+  hfdcan2.Init.NominalPrescaler = 1;
+  hfdcan2.Init.NominalSyncJumpWidth = 16;
+  hfdcan2.Init.NominalTimeSeg1 = 63;
+  hfdcan2.Init.NominalTimeSeg2 = 16;
+  hfdcan2.Init.DataPrescaler = 1;
+  hfdcan2.Init.DataSyncJumpWidth = 4;
+  hfdcan2.Init.DataTimeSeg1 = 5;
+  hfdcan2.Init.DataTimeSeg2 = 4;
+  hfdcan2.Init.MessageRAMOffset = 9;
+  hfdcan2.Init.StdFiltersNbr = 1;
+  hfdcan2.Init.ExtFiltersNbr = 0;
+  hfdcan2.Init.RxFifo0ElmtsNbr = 0;
+  hfdcan2.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan2.Init.RxFifo1ElmtsNbr = 1;
+  hfdcan2.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan2.Init.RxBuffersNbr = 0;
+  hfdcan2.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
+  hfdcan2.Init.TxEventsNbr = 0;
+  hfdcan2.Init.TxBuffersNbr = 0;
+  hfdcan2.Init.TxFifoQueueElmtsNbr = 1;
+  hfdcan2.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
+  hfdcan2.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
+  if (HAL_FDCAN_Init(&hfdcan2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN FDCAN2_Init 2 */
+  HAL_FDCAN_ConfigGlobalFilter(&hfdcan2, FDCAN_REJECT, FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
+
+  PrimaryCan.Filter.IdType = FDCAN_STANDARD_ID;
+  PrimaryCan.Filter.FilterIndex = 0;
+  PrimaryCan.Filter.FilterType = FDCAN_FILTER_MASK;
+  PrimaryCan.Filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO1;
+  PrimaryCan.Filter.FilterID1 = 0x00; //Filter
+  PrimaryCan.Filter.FilterID2 = 0x00; //Mask
+  PrimaryCan.Filter.RxBufferIndex = 0;
+
+  if (HAL_FDCAN_ConfigFilter(&hfdcan2, &PrimaryCan.Filter) != HAL_OK){
+  Error_Handler();
+  }
+
+  PrimaryCan.TxHeader.IdType = FDCAN_STANDARD_ID;
+  PrimaryCan.TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+  PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+  PrimaryCan.TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  PrimaryCan.TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+  PrimaryCan.TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+  PrimaryCan.TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  PrimaryCan.TxHeader.MessageMarker = 0;
+  /* USER CODE END FDCAN2_Init 2 */
+
+}
+/* FDCAN3 init function */
+void MX_FDCAN3_Init(void)
+{
+
+  /* USER CODE BEGIN FDCAN3_Init 0 */
+
+  /* USER CODE END FDCAN3_Init 0 */
+
+  /* USER CODE BEGIN FDCAN3_Init 1 */
+
+  /* USER CODE END FDCAN3_Init 1 */
+  hfdcan3.Instance = FDCAN3;
+  hfdcan3.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
+  hfdcan3.Init.Mode = FDCAN_MODE_NORMAL;
+  hfdcan3.Init.AutoRetransmission = ENABLE;
+  hfdcan3.Init.TransmitPause = DISABLE;
+  hfdcan3.Init.ProtocolException = ENABLE;
+  hfdcan3.Init.NominalPrescaler = 1;
+  hfdcan3.Init.NominalSyncJumpWidth = 16;
+  hfdcan3.Init.NominalTimeSeg1 = 63;
+  hfdcan3.Init.NominalTimeSeg2 = 16;
+  hfdcan3.Init.DataPrescaler = 1;
+  hfdcan3.Init.DataSyncJumpWidth = 4;
+  hfdcan3.Init.DataTimeSeg1 = 5;
+  hfdcan3.Init.DataTimeSeg2 = 4;
+  hfdcan3.Init.MessageRAMOffset = 18;
+  hfdcan3.Init.StdFiltersNbr = 1;
+  hfdcan3.Init.ExtFiltersNbr = 0;
+  hfdcan3.Init.RxFifo0ElmtsNbr = 1;
+  hfdcan3.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan3.Init.RxFifo1ElmtsNbr = 0;
+  hfdcan3.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
+  hfdcan3.Init.RxBuffersNbr = 0;
+  hfdcan3.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
+  hfdcan3.Init.TxEventsNbr = 0;
+  hfdcan3.Init.TxBuffersNbr = 0;
+  hfdcan3.Init.TxFifoQueueElmtsNbr = 1;
+  hfdcan3.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
+  hfdcan3.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
+  if (HAL_FDCAN_Init(&hfdcan3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN FDCAN3_Init 2 */
+  HAL_FDCAN_ConfigGlobalFilter(&hfdcan3, FDCAN_REJECT, FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
+
+  AutoCan.Filter.IdType = FDCAN_STANDARD_ID;
+  AutoCan.Filter.FilterIndex = 0;
+  AutoCan.Filter.FilterType = FDCAN_FILTER_MASK;
+  AutoCan.Filter.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
+  AutoCan.Filter.FilterID1 = 0x00; //Filter
+  AutoCan.Filter.FilterID2 = 0x00; //Mask
+  AutoCan.Filter.RxBufferIndex = 0;
+
+  if (HAL_FDCAN_ConfigFilter(&hfdcan3, &AutoCan.Filter) != HAL_OK){
+  Error_Handler();
+  }
+
+  AutoCan.TxHeader.IdType = FDCAN_STANDARD_ID;
+  AutoCan.TxHeader.TxFrameType = FDCAN_DATA_FRAME;
+  AutoCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+  AutoCan.TxHeader.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+  AutoCan.TxHeader.BitRateSwitch = FDCAN_BRS_OFF;
+  AutoCan.TxHeader.FDFormat = FDCAN_CLASSIC_CAN;
+  AutoCan.TxHeader.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+  AutoCan.TxHeader.MessageMarker = 0;
+  /* USER CODE END FDCAN3_Init 2 */
+
+}
+
+static uint32_t HAL_RCC_FDCAN_CLK_ENABLED=0;
+
+void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
+{
+
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(fdcanHandle->Instance==FDCAN1)
+  {
+  /* USER CODE BEGIN FDCAN1_MspInit 0 */
+
+  /* USER CODE END FDCAN1_MspInit 0 */
+    /* FDCAN1 clock enable */
+    HAL_RCC_FDCAN_CLK_ENABLED++;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==1){
+      __HAL_RCC_FDCAN_CLK_ENABLE();
+    }
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    /**FDCAN1 GPIO Configuration
+    PA11     ------> FDCAN1_RX
+    PA12     ------> FDCAN1_TX
+    */
+    GPIO_InitStruct.Pin = MOTOR_RX_Pin|MOTOR_TX_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    /* FDCAN1 interrupt Init */
+    HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN1_MspInit 1 */
+
+  /* USER CODE END FDCAN1_MspInit 1 */
+  }
+  else if(fdcanHandle->Instance==FDCAN2)
+  {
+  /* USER CODE BEGIN FDCAN2_MspInit 0 */
+
+  /* USER CODE END FDCAN2_MspInit 0 */
+    /* FDCAN2 clock enable */
+    HAL_RCC_FDCAN_CLK_ENABLED++;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==1){
+      __HAL_RCC_FDCAN_CLK_ENABLE();
+    }
+
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /**FDCAN2 GPIO Configuration
+    PB12     ------> FDCAN2_RX
+    PB13     ------> FDCAN2_TX
+    */
+    GPIO_InitStruct.Pin = PRIMARY_RX_Pin|PRIMARY_TX_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF9_FDCAN2;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* FDCAN2 interrupt Init */
+    HAL_NVIC_SetPriority(FDCAN2_IT1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FDCAN2_IT1_IRQn);
+  /* USER CODE BEGIN FDCAN2_MspInit 1 */
+
+  /* USER CODE END FDCAN2_MspInit 1 */
+  }
+  else if(fdcanHandle->Instance==FDCAN3)
+  {
+  /* USER CODE BEGIN FDCAN3_MspInit 0 */
+
+  /* USER CODE END FDCAN3_MspInit 0 */
+    /* FDCAN3 clock enable */
+    HAL_RCC_FDCAN_CLK_ENABLED++;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==1){
+      __HAL_RCC_FDCAN_CLK_ENABLE();
+    }
+
+    __HAL_RCC_GPIOD_CLK_ENABLE();
+    /**FDCAN3 GPIO Configuration
+    PD12     ------> FDCAN3_RX
+    PD13     ------> FDCAN3_TX
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF5_FDCAN3;
+    HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+    /* FDCAN3 interrupt Init */
+    HAL_NVIC_SetPriority(FDCAN3_IT0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(FDCAN3_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN3_MspInit 1 */
+
+  /* USER CODE END FDCAN3_MspInit 1 */
+  }
+}
+
+void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef* fdcanHandle)
+{
+
+  if(fdcanHandle->Instance==FDCAN1)
+  {
+  /* USER CODE BEGIN FDCAN1_MspDeInit 0 */
+
+  /* USER CODE END FDCAN1_MspDeInit 0 */
+    /* Peripheral clock disable */
+    HAL_RCC_FDCAN_CLK_ENABLED--;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==0){
+      __HAL_RCC_FDCAN_CLK_DISABLE();
+    }
+
+    /**FDCAN1 GPIO Configuration
+    PA11     ------> FDCAN1_RX
+    PA12     ------> FDCAN1_TX
+    */
+    HAL_GPIO_DeInit(GPIOA, MOTOR_RX_Pin|MOTOR_TX_Pin);
+
+    /* FDCAN1 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(FDCAN1_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN1_MspDeInit 1 */
+
+  /* USER CODE END FDCAN1_MspDeInit 1 */
+  }
+  else if(fdcanHandle->Instance==FDCAN2)
+  {
+  /* USER CODE BEGIN FDCAN2_MspDeInit 0 */
+
+  /* USER CODE END FDCAN2_MspDeInit 0 */
+    /* Peripheral clock disable */
+    HAL_RCC_FDCAN_CLK_ENABLED--;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==0){
+      __HAL_RCC_FDCAN_CLK_DISABLE();
+    }
+
+    /**FDCAN2 GPIO Configuration
+    PB12     ------> FDCAN2_RX
+    PB13     ------> FDCAN2_TX
+    */
+    HAL_GPIO_DeInit(GPIOB, PRIMARY_RX_Pin|PRIMARY_TX_Pin);
+
+    /* FDCAN2 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(FDCAN2_IT1_IRQn);
+  /* USER CODE BEGIN FDCAN2_MspDeInit 1 */
+
+  /* USER CODE END FDCAN2_MspDeInit 1 */
+  }
+  else if(fdcanHandle->Instance==FDCAN3)
+  {
+  /* USER CODE BEGIN FDCAN3_MspDeInit 0 */
+
+  /* USER CODE END FDCAN3_MspDeInit 0 */
+    /* Peripheral clock disable */
+    HAL_RCC_FDCAN_CLK_ENABLED--;
+    if(HAL_RCC_FDCAN_CLK_ENABLED==0){
+      __HAL_RCC_FDCAN_CLK_DISABLE();
+    }
+
+    /**FDCAN3 GPIO Configuration
+    PD12     ------> FDCAN3_RX
+    PD13     ------> FDCAN3_TX
+    */
+    HAL_GPIO_DeInit(GPIOD, GPIO_PIN_12|GPIO_PIN_13);
+
+    /* FDCAN3 interrupt Deinit */
+    HAL_NVIC_DisableIRQ(FDCAN3_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN3_MspDeInit 1 */
+
+  /* USER CODE END FDCAN3_MspDeInit 1 */
+  }
+}
+
+/* USER CODE BEGIN 1 */
+void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo0ITs){
+  if((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != RESET)
+  {
+	/* CAN 1 - MOTOR Rx */
+	if(hfdcan->Instance == FDCAN1){
+			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &MotorCan.RxHeader,MotorCan.RxData) != HAL_OK)
+			{
+				Error_Handler();
+			}
+			switch(MotorCan.RxHeader.Identifier){
+			case(0x181):
+					switch(MotorCan.RxData[0]){
+					case 0x40:
+						inv_enable 			  = MotorCan.RxData[1] >> 0 & 1;
+						inv_ok 				  = MotorCan.RxData[1] >> 1 & 1;
+						curr_lim_reached 	  = MotorCan.RxData[4] >> 5 & 1;
+						curr_lim_igbt_temp 	  = MotorCan.RxData[5] >> 0 & 1;
+						curr_lim_motor_temp   = MotorCan.RxData[5] >> 2 & 1;
+						curr_peak_val_warn 	  = MotorCan.RxData[5] >> 4 & 1;
+						break;
+					case 0x8F:
+						defective_param 				= MotorCan.RxData[1] >> 0 & 1;
+						hardware_fault 					= MotorCan.RxData[1] >> 1 & 1;
+						faulty_safety_circuit 			= MotorCan.RxData[1] >> 2 & 1;
+						can_time_out_exceeded 			= MotorCan.RxData[1] >> 3 & 1;
+						bad_encoder_signal 				= MotorCan.RxData[1] >> 4 & 1;
+						no_power_supply_voltage 		= MotorCan.RxData[1] >> 5 & 1;
+
+						overvoltage 					= MotorCan.RxData[2] >> 0 & 1;
+						overcurrent 					= MotorCan.RxData[2] >> 1 & 1;
+						current_measure_fault 			= MotorCan.RxData[2] >> 6 & 1;
+						ballast_circuit_overload 		= MotorCan.RxData[2] >> 7 & 1;
+
+						faulty_run_signal_emi 			= MotorCan.RxData[3] >> 1 & 1;
+						inactive_rfe 					= MotorCan.RxData[3] >> 2 & 1;
+						power_supply_missing_or_too_low = MotorCan.RxData[3] >> 5 & 1;
+
+						output_voltage_limit_reached 	= MotorCan.RxData[4] >> 0 & 1;
+						overcurrent_200 				= MotorCan.RxData[4] >> 1 & 1;
+						ballast_circuit_overload_87 	= MotorCan.RxData[4] >> 7 & 1;
+						break;
+					case 0xA0:
+						actual_trq = MotorCan.RxData[2];
+						actual_trq <<= 8;
+						actual_trq |= MotorCan.RxData[1];
+						break;
+					case 0xA8:
+						int_helper = ((MotorCan.RxData[2]<<8)|MotorCan.RxData[1]);
+						float_helper = int_helper*6500.0/32767.0;
+						motor_rpm = - float_helper;
+						break;
+					case 0x8A:
+						int_inv_vout = MotorCan.RxData[2];
+						int_inv_vout <<= 8;
+						int_inv_vout |= MotorCan.RxData[1];
+						Finv_vout = int_inv_vout;
+						break;
+					case 0x5F:
+						int_iact = MotorCan.RxData[2];
+						int_iact <<= 8;
+						int_iact |= MotorCan.RxData[1];
+						Fiact = int_iact/2048.0;
+						break;
+					case 0xEB:
+						int_dc_bus_voltage = MotorCan.RxData[2];
+						int_dc_bus_voltage <<= 8;
+						int_dc_bus_voltage |= MotorCan.RxData[1];
+						Fdc_bus_voltage = ((float)int_dc_bus_voltage*700.0*1.5)/32767.0;
+						break;
+					case 0x49:
+						motor_temp = MotorCan.RxData[2];
+						motor_temp <<= 8;
+						motor_temp |= MotorCan.RxData[1];
+						temp_helper =(float)motor_temp*0.019-179.424;
+						motor_temp = temp_helper;
+						break;
+					case 0x4A:
+						igbt_temp = MotorCan.RxData[2];
+						igbt_temp <<= 8;
+						igbt_temp |= MotorCan.RxData[1];
+						temp_helper = ((float)igbt_temp-16785.0)/89.0;
+						igbt_temp = temp_helper;
+						break;
+				break;
+					}
+			default:
+				break;
+			}
+		}
+	}
+
+	/* CAN3 - AUTO Rx */
+	if(hfdcan->Instance == FDCAN3){
+		if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &AutoCan.RxHeader,AutoCan.RxData) != HAL_OK){
+			Error_Handler();
+		}
+		switch(AutoCan.RxHeader.Identifier){
+		case AUTONOMOUS_FROM_DASH_1:
+			Mission.event  = AutoCan.RxData[0] & 0b01111111;
+			Mission.locked = (AutoCan.RxData[0] >> 7) & 1;
+
+			xTaskNotifyFromISR(Mission_Handler,0,eNoAction,&xHigherPriorityAutonomous);
+			portYIELD_FROM_ISR(xHigherPriorityAutonomous);
+			break;
+		case AUTONOMOUS_FROM_ASB_1:
+			ebs_activated = AutoCan.RxData[0];
+			if(ebs_activated  == 3 && Mission.autonomous){
+				xEventGroupSetBitsFromISR(xAS_Status_EventGroup,EBS_ACTIVATED,&xHigherPriorityAS_Status);
+				portYIELD_FROM_ISR(xHigherPriorityAS_Status);
+			}
+			else if(ebs_activated != 3 && Mission.autonomous){
+				ebs_activated = 0;
+				xEventGroupClearBitsFromISR(xAS_Status_EventGroup,EBS_ACTIVATED);
+			}
+			break;
+		case AUTONOMOUS_FROM_ASB_2:
+			asb_ok = AutoCan.RxData[0] >> 2 & 1;
+			asb_HB = AutoCan.RxData[0] >> 3 & 1;
+
+			if(asb_HB != asb_HB_previous && Mission.autonomous){
+				asb_HB_previous = asb_HB;
+				xTaskNotifyFromISR(Initial_Check,1,eSetValueWithOverwrite,&xHigherPriorityASB);
+				portYIELD_FROM_ISR(xHigherPriorityASB);
+			}
+
+			if(asb_ok && Mission.autonomous){
+				xEventGroupSetBitsFromISR(xAS_Status_EventGroup,ASB_OK,&xHigherPriorityAS_Status);
+				portYIELD_FROM_ISR(xHigherPriorityAS_Status);
+			}
+			else if(!asb_ok && Mission.autonomous){
+				xEventGroupClearBitsFromISR(xAS_Status_EventGroup,ASB_OK);
+			}
+
+			break;
+		case AUTONOMOUS_FROM_PC_1:
+			switch(AutoCan.RxData[0] & 0x0F){
+			case DV_READY_MSG:
+				if(Mission.autonomous){
+					xEventGroupClearBitsFromISR(xAS_Status_EventGroup,MISSION_FINISHED);
+					xEventGroupSetBitsFromISR(xDV_Ready_EventGroup,DV_READY,&xHigherPriorityAS_Status);
+					portYIELD_FROM_ISR(xHigherPriorityAS_Status);
+				}
+				break;
+			case MISSION_FINISHED_MSG:
+				if(Mission.autonomous){
+					xEventGroupClearBitsFromISR(xDV_Ready_EventGroup,DV_READY);
+					xEventGroupSetBitsFromISR(xAS_Status_EventGroup,MISSION_FINISHED,&xHigherPriorityAS_Status);
+					portYIELD_FROM_ISR(xHigherPriorityAS_Status);
+				}
+			default:
+				xEventGroupClearBitsFromISR(xAS_Status_EventGroup,MISSION_FINISHED);
+				xEventGroupClearBitsFromISR(xDV_Ready_EventGroup,DV_READY);
+				break;
+			}
+
+			auto_trq_req = ((float)((int16_t)(((AutoCan.RxData[1] << 8) | AutoCan.RxData[2]))))/128;
+			break;
+		case AUTONOMOUS_FROM_RES:
+			sd_res   = AutoCan.RxData[0] >> 0 && 1;
+			rtd_auto = AutoCan.RxData[0] >> 2 && 1;
+
+			if(!sd_res){
+				xTaskNotifyFromISR(Open_Shutdown,0,eNoAction,&xHigherPriorityAutonomous);
+				portYIELD_FROM_ISR(xHigherPriorityAutonomous);
+			}
+			if(rtd_auto){
+				xTaskNotifyFromISR(Button_Pressed,0,eNoAction,&xHigherPriorityRTD_B_Pressed);
+				portYIELD_FROM_ISR(xHigherPriorityRTD_B_Pressed);
+			}
+			break;
+		default:
+			break;
+		}
+	}
+}
+
+void HAL_FDCAN_RxFifo1Callback(FDCAN_HandleTypeDef *hfdcan, uint32_t RxFifo1ITs){
+	/* CAN2 - PRIMARY Rx */
+	if((RxFifo1ITs & FDCAN_IT_RX_FIFO1_NEW_MESSAGE) != RESET){
+		if(hfdcan->Instance == FDCAN2){
+			if (HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO1, &PrimaryCan.RxHeader, PrimaryCan.RxData) != HAL_OK){
+				Error_Handler();
+			}
+
+			switch(PrimaryCan.RxHeader.Identifier){
+			case PRIMARY_FROM_DASH_1:
+				rtd_pressed = PrimaryCan.RxData[0] >> 0 & 1;
+				pc_pressed = PrimaryCan.RxData[0] >> 5 & 1;
+
+				if(pc_pressed){
+					xTaskNotifyFromISR(Button_Pressed,0,eNoAction,&xHigherPriorityPCPressed);
+					portYIELD_FROM_ISR(xHigherPriorityPCPressed);
+				}
+
+				else if(!pc_pressed){
+				xEventGroupClearBitsFromISR(xPrecharge_EventGroup,PC_PRESSED);
+				}
+
+				if(rtd_pressed){
+					xTaskNotifyFromISR(Button_Pressed,0,eNoAction,&xHigherPriorityRTD_B_Pressed);
+					portYIELD_FROM_ISR(xHigherPriorityRTD_B_Pressed);
+				}
+				break;
+
+			case PRIMARY_FROM_DASH_2:
+				power_limit = PrimaryCan.RxData[0];
+				def = PrimaryCan.RxData[1];
+				regen_pressed = PrimaryCan.RxData[2] >> 1 & 1;
+
+				if(def > 95){
+					xSemaphoreGiveFromISR(xTCSSemaphore,&xHigherPriorityTCS);
+					portYIELD_FROM_ISR(xHigherPriorityTCS);
+				}
+
+			case PRIMARY_FROM_ASB_1:
+				asms = PrimaryCan.RxData[0] >> 2 & 1;
+
+				if(asms && Mission.autonomous){
+					xEventGroupSetBitsFromISR(xAS_Status_EventGroup,ASMS,&xHigherPriorityAS_Status);
+					portYIELD_FROM_ISR(xHigherPriorityAS_Status);
+				}
+				else if(!asms && Mission.autonomous){
+					xEventGroupClearBitsFromISR(xAS_Status_EventGroup,ASMS);
+				}
+				break;
+			default:
+				break;
+			}
+		}
+	}
+}
+
+void FDCAN_Tx(TimerHandle_t xTimer){
+//	if(xTimer == MotorCanTimer){
+//
+//	}
+	if(xTimer == Primary1CanTimer){
+		HAL_GPIO_TogglePin(GPIOB, PRIMARY_Pin);
+
+		switch(primary_tx_cnt){
+		case 0:
+			primary_tx_cnt++;
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_DASH_1;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_6;
+			PrimaryCan.TxData[0] = imd;
+			PrimaryCan.TxData[0] |= ams<<1;
+			PrimaryCan.TxData[0] |= asb<<2;
+			PrimaryCan.TxData[0] |= bspd<<3;
+			PrimaryCan.TxData[0] |= precharge_flag<<4;
+			//PrimaryCan.TxData[0] |= spare<<5;
+			PrimaryCan.TxData[0] |= ts_off<<6;
+
+			PrimaryCan.TxData[1] = apps1;
+			PrimaryCan.TxData[2] = apps2;
+			PrimaryCan.TxData[4] = brf;
+			PrimaryCan.TxData[5] = brr;
+
+			if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0)
+			{
+				HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+			}
+			else
+			{
+				uint32_t txFifoRequest = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(&hfdcan2);
+				if (HAL_FDCAN_IsTxBufferMessagePending(&hfdcan2, txFifoRequest)) {
+					HAL_FDCAN_AbortTxRequest(&hfdcan2, txFifoRequest);
+				}
+			}
+			break;
+		case 1:
+			primary_tx_cnt++;
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_2;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[0] = actual_trq>>8;
+			PrimaryCan.TxData[1] = actual_trq;
+			PrimaryCan.TxData[2] = requested_trq>>8;
+			PrimaryCan.TxData[3] = requested_trq;
+			PrimaryCan.TxData[4] = motor_rpm>>8;
+			PrimaryCan.TxData[5] = motor_rpm;
+			//PrimaryCan.TxData[6] = steering_travel;
+			//PrimaryCan.TxData[7] = steering_travel;
+
+			if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0)
+			{
+				HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+
+			}
+			else
+			{
+				uint32_t txFifoRequest = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(&hfdcan2);
+				if (HAL_FDCAN_IsTxBufferMessagePending(&hfdcan2, txFifoRequest)) {
+					HAL_FDCAN_AbortTxRequest(&hfdcan2, txFifoRequest);
+				}
+			}
+			break;
+		case 2:
+			primary_tx_cnt++;
+
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_1;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[0] = rpm_fl>>8;
+			PrimaryCan.TxData[1] = rpm_fl;
+			PrimaryCan.TxData[2] = rpm_fr>>8;
+			PrimaryCan.TxData[3] = rpm_fr;
+			PrimaryCan.TxData[4] = rpm_rl>>8;
+			PrimaryCan.TxData[5] = rpm_rl;
+			PrimaryCan.TxData[6] = rpm_rr>>8;
+			PrimaryCan.TxData[7] = rpm_rr;
+
+			if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0)
+			{
+				HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+
+			}
+			else
+			{
+				uint32_t txFifoRequest = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(&hfdcan2);
+				if (HAL_FDCAN_IsTxBufferMessagePending(&hfdcan2, txFifoRequest)) {
+					HAL_FDCAN_AbortTxRequest(&hfdcan2, txFifoRequest);
+				}
+			}
+			break;
+		case 3:
+			primary_tx_cnt = 0;
+
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_3;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[0] = rpm_fl>>8;
+			PrimaryCan.TxData[1] = rpm_fl;
+			PrimaryCan.TxData[2] = rpm_fr>>8;
+			PrimaryCan.TxData[3] = rpm_fr;
+			PrimaryCan.TxData[4] = rpm_rl>>8;
+			PrimaryCan.TxData[5] = rpm_rl;
+			PrimaryCan.TxData[6] = rpm_rr>>8;
+			PrimaryCan.TxData[7] = rpm_rr;
+
+			if (HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0)
+			{
+				HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+
+			}
+			else
+			{
+				uint32_t txFifoRequest = HAL_FDCAN_GetLatestTxFifoQRequestBuffer(&hfdcan2);
+				if (HAL_FDCAN_IsTxBufferMessagePending(&hfdcan2, txFifoRequest)) {
+					HAL_FDCAN_AbortTxRequest(&hfdcan2, txFifoRequest);
+				}
+			}
+			break;
+		default:
+			primary_tx_cnt = 0;
+			break;
+		}
+	}
+	else if(xTimer == Primary2CanTimer){
+		HAL_GPIO_TogglePin(GPIOD, AUTO_Pin);
+
+		switch(auto_tx_cnt){
+		case 0:
+			auto_tx_cnt++;
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_3;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[1] = inv_enable;
+			PrimaryCan.TxData[1] |= inv_ok << 1;
+
+			PrimaryCan.TxData[4] = curr_lim_reached << 5;
+
+			PrimaryCan.TxData[5] = curr_lim_igbt_temp;
+			PrimaryCan.TxData[5] |= curr_lim_motor_temp << 2;
+			PrimaryCan.TxData[5] |= curr_peak_val_warn << 4;
+			HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+			break;
+		case 1:
+			auto_tx_cnt++;
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_3;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[1] = defective_param;
+			PrimaryCan.TxData[1] |= hardware_fault << 1;
+			PrimaryCan.TxData[1] |= faulty_safety_circuit << 2;
+			PrimaryCan.TxData[1] |= can_time_out_exceeded << 3;
+			PrimaryCan.TxData[1] |= bad_encoder_signal << 4;
+			PrimaryCan.TxData[1] |= no_power_supply_voltage << 5;
+
+			PrimaryCan.TxData[2] = overvoltage;
+			PrimaryCan.TxData[2] |= overcurrent << 1;
+			PrimaryCan.TxData[2] |= current_measure_fault << 6;
+			PrimaryCan.TxData[2] |= ballast_circuit_overload << 7;
+
+			PrimaryCan.TxData[3] = faulty_run_signal_emi << 1;
+			PrimaryCan.TxData[3] |= inactive_rfe << 2;
+			PrimaryCan.TxData[3] |= power_supply_missing_or_too_low << 5;
+
+			PrimaryCan.TxData[4] = output_voltage_limit_reached;
+			PrimaryCan.TxData[4] |= overcurrent_200 << 1;
+			PrimaryCan.TxData[4] |= ballast_circuit_overload_87 << 7;
+			HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+			break;
+		case 2:
+			auto_tx_cnt = 0;
+			PrimaryCan.TxHeader.Identifier = PRIMARY_TO_TELEM_3;
+			PrimaryCan.TxHeader.DataLength = FDCAN_DLC_BYTES_8;
+			PrimaryCan.TxData[1] = apps_deviation;
+			PrimaryCan.TxData[1] |= apps_implausibility << 1;
+			PrimaryCan.TxData[1] |= brake_deviation << 2;
+			PrimaryCan.TxData[1] |= brake_implausibility << 3;
+			PrimaryCan.TxData[1] |= S_BSPD << 4;
+			PrimaryCan.TxData[1] |= power_limit_active << 5;
+			HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2,&PrimaryCan.TxHeader,PrimaryCan.TxData);
+			break;
+		default:
+			auto_tx_cnt = 0;
+			break;
+		}
+	}
+}
+
+void FDCAN_Start(){
+	/* FDCAN 1 */
+	  if(HAL_FDCAN_Start(&hfdcan1)!= HAL_OK){
+	      Error_Handler();
+	  }
+
+	 if (HAL_FDCAN_ActivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK){
+	     Error_Handler();
+	 }
+//	 HAL_FDCAN_EnableTxDelayCompensation(&hfdcan1);
+
+	 /* FDCAN 2 */
+	  if(HAL_FDCAN_Start(&hfdcan2)!= HAL_OK){
+	      Error_Handler();
+	  }
+	 HAL_FDCAN_ConfigInterruptLines(&hfdcan2, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, FDCAN_INTERRUPT_LINE1);
+	 HAL_FDCAN_ConfigRxFifoOverwrite(&hfdcan2,FDCAN_RX_FIFO1,FDCAN_RX_FIFO_OVERWRITE);
+	 if (HAL_FDCAN_ActivateNotification(&hfdcan2, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0) != HAL_OK){
+	     Error_Handler();
+	 }
+//	 HAL_FDCAN_EnableTxDelayCompensation(&hfdcan2);
+
+	 /* FDCAN 3 */
+	  if(HAL_FDCAN_Start(&hfdcan3)!= HAL_OK){
+	      Error_Handler();
+	  }
+	 if (HAL_FDCAN_ActivateNotification(&hfdcan3, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0) != HAL_OK){
+	     Error_Handler();
+	 }
+//	 HAL_FDCAN_EnableTxDelayCompensation(&hfdcan3);
+}
+
+void SoftwareTimersStart(){
+//	xTimerStart(MotorCanTimer,0);
+	xTimerStart(Primary1CanTimer,0);
+	xTimerStart(Primary2CanTimer,0);
+}
+/* USER CODE END 1 */
